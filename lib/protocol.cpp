@@ -176,8 +176,14 @@ Message::Message(const Message &other) : header(other.header) {
     user_info->status = other.user_info->status;
     user_info->tag_count = other.user_info->tag_count;
 
-    // Bug: Shallow copy of array - both objects share same tags pointer
-    user_info->tags = other.user_info->tags;
+    if (other.user_info->tags && other.user_info->tag_count > 0) {
+      user_info->tags = new ProtocolString[other.user_info->tag_count];
+      for (uint32_t i = 0; i < other.user_info->tag_count; i++) {
+        user_info->tags[i] = other.user_info->tags[i];
+      }
+    } else {
+      user_info->tags = nullptr;
+    }
     break;
   case FILE_CHUNK:
     file_chunk = new FileChunk();

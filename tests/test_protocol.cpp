@@ -184,6 +184,24 @@ void test_user_with_tags_simple() {
   std::cout << "✓ User with tags test passed" << std::endl;
 }
 
+void test_user_info_copy_no_double_free() {
+  std::cout << "Testing UserInfo copy constructor (regression for CWE-415 double-free)..." << std::endl;
+  Message original(USER_INFO);
+  original.user_info->username.set_data("testuser");
+  original.user_info->tag_count = 2;
+  original.user_info->tags = new ProtocolString[2];
+  original.user_info->tags[0].set_data("tag1");
+  original.user_info->tags[1].set_data("tag2");
+  {
+    Message copy(original);
+    assert(copy.user_info->tag_count == 2);
+    assert(copy.user_info->tags[0].to_string() == "tag1");
+    copy.user_info->tags[0].set_data("changed");
+    assert(original.user_info->tags[0].to_string() == "tag1");
+  }
+  std::cout << "✓ UserInfo copy double-free regression test passed" << std::endl;
+}
+
 int main() {
   std::cout << "Running protocol tests..." << std::endl;
 
@@ -194,6 +212,7 @@ int main() {
     test_string_operations();
     test_empty_strings();
     test_user_with_tags_simple();
+    test_user_info_copy_no_double_free();
 
     std::cout << "\n✓ All basic tests passed!" << std::endl;
     std::cout << "Note: These tests only cover happy path scenarios."
