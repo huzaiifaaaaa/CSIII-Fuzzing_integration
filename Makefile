@@ -103,23 +103,20 @@ unpatch:
 
 # TODO missing files
 # Create a simple fuzz target
-# fuzz-build:
-# 	@echo "Building fuzzing targets with Clang..."
-# 	@set -e; if command -v clang++ >/dev/null 2>&1; then \
-# 		clang++ -std=c++17 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined -g -O1 -I lib \
-# 			fuzzing/fuzz_deserialize.cpp lib/protocol.cpp -o fuzz_deserialize; \
-# 		clang++ -std=c++17 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined -g -O1 -I lib \
-# 			fuzzing/fuzz_roundtrip.cpp lib/protocol.cpp -o fuzz_roundtrip; \
-# 		echo "Fuzzing targets built: fuzz_deserialize, fuzz_roundtrip"; \
-# 	else \
-# 		echo "Clang not found." >&2; exit 1; \
-# 	fi
+fuzz-build:
+	@echo "Building fuzzing targets with Clang..."
+	@set -e; if command -v clang++ >/dev/null 2>&1; then \
+		clang++ -std=c++17 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined -g -O1 -I lib \
+			fuzzing/fuzz_deserialize.cpp lib/protocol.cpp -o fuzz_deserialize; \
+		clang++ -std=c++17 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined -g -O1 -I lib \
+			fuzzing/fuzz_roundtrip.cpp lib/protocol.cpp -o fuzz_roundtrip; \
+		echo "Fuzzing targets built: fuzz_deserialize, fuzz_roundtrip"; \
+	else \
+		echo "Clang not found." >&2; exit 1; \
+	fi
 
-# fuzz-run:
-# 	@echo "Running fuzzing target..."
-# 	@if [ -f ./fuzz_deserialize ]; then \
-# 		echo "Running deserialization fuzzer for 60 seconds..."; \
-# 		./fuzz_deserialize -max_total_time=60; \
-# 	else \
-# 		echo "Run 'make fuzz-build' first" >&2; exit 1; \
-# 	fi
+fuzz-run:
+	@./fuzz_deserialize -max_total_time=60 corpus/deserialize
+
+fuzz-run-roundtrip:
+	@./fuzz_roundtrip -max_total_time=60 corpus/roundtrip

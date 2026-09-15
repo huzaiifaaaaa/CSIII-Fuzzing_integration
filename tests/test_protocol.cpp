@@ -202,6 +202,23 @@ void test_user_info_copy_no_double_free() {
   std::cout << "✓ UserInfo copy double-free regression test passed" << std::endl;
 }
 
+void test_deserialize_rejects_tag_count_overflow() {
+  std::cout << "Testing deserialize rejects overflowing tag_count "
+               "(regression for CWE-190/CWE-20)..."
+            << std::endl;
+
+  const uint8_t crashing_input[] = {
+      0xfe, 0xca, 0x01, 0x02, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+      0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x10, 0x01, 0x00,
+      0x75, 0x01, 0x00, 0x65};
+
+  Message *msg = Serializer::deserialize(crashing_input, sizeof(crashing_input));
+  assert(msg == nullptr); // tag_count this large can't be backed by 28 bytes
+  delete msg;
+
+  std::cout << "✓ Tag count overflow regression test passed" << std::endl;
+}
+
 int main() {
   std::cout << "Running protocol tests..." << std::endl;
 
@@ -213,6 +230,7 @@ int main() {
     test_empty_strings();
     test_user_with_tags_simple();
     test_user_info_copy_no_double_free();
+    test_deserialize_rejects_tag_count_overflow();
 
     std::cout << "\n✓ All basic tests passed!" << std::endl;
     std::cout << "Note: These tests only cover happy path scenarios."

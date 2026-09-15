@@ -406,17 +406,18 @@ Message *Serializer::deserialize(const uint8_t *data, size_t length) {
     // against the data remaining - the per-tag read_string calls can run past
     // the end of the buffer.
     if (msg->user_info->tag_count > 0) {
-      // INTENTIONAL BUG (CWE-190): 32-bit size computation wraps for
-      // large tag_count - e.g. 0x10000001 * 16 == 0 (mod 2^32), so
-      // nothing is allocated and the loop below writes OOB.
-      uint32_t tag_bytes = msg->user_info->tag_count * sizeof(ProtocolString);
-      msg->user_info->tags =
-          new ProtocolString[tag_bytes / sizeof(ProtocolString)];
-      for (uint32_t i = 0; i < msg->user_info->tag_count; i++) {
-        offset += read_string(data + offset, length - offset,
-                              msg->user_info->tags[i]);
+      uint64_t remaining_after_strings = (offset <= length) ? (length - offset) : 0;
+        uint64_t max_possible_tags = remaining_after_strings / sizeof(uint16_t);
+        if (static_cast<uint64_t>(msg->user_info->tag_count) > max_possible_tags) {
+          delete msg;
+          return nullptr;
+        }
+        uint64_t tag_bytes = static_cast<uint64_t>(msg->user_info->tag_count) * sizeof(ProtocolString);
+          msg->user_info->tags = new ProtocolString[tag_bytes / sizeof(ProtocolString)];
+          for (uint32_t i = 0; i < msg->user_info->tag_count; i++) {
+            offset += read_string(data + offset, length - offset, msg->user_info->tags[i]);
+          }
       }
-    }
     break;
   }
   case FILE_CHUNK: {
