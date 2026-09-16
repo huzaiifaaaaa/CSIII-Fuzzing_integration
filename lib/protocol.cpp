@@ -35,13 +35,18 @@ ProtocolString::ProtocolString(const ProtocolString &other)
   }
 }
 
-// Assignment operator - should perform deep copy like copy constructor
-// INTENTIONAL BUG: Does not free existing memory before reassignment,
-// causing memory leaks on repeated assignments.
-// Also consider: what happens when `other` is empty and `this` already
-// holds data? Is the old buffer still reachable?
+// Assignment operator - performs deep copy like the copy constructor
+// Fix (CWE-401): free any existing buffer before overwriting `data`,
+// otherwise the old allocation becomes unreachable on every reassignment -
+// this is the actual root cause of the memory leak (Message::operator=
+// leaks through this every time it assigns into a ChatMessage/UserInfo
+// field that already held string data).
 ProtocolString &ProtocolString::operator=(const ProtocolString &other) {
   if (this != &other) {
+    if (data) {
+      delete[] data;
+      data = nullptr;
+    }
     length = other.length;
     if (other.data && other.length > 0) {
       data = new char[length];
@@ -205,27 +210,81 @@ Message::Message(const Message &other) : header(other.header) {
 }
 
 // Assignment operator - replaces current message content with copy of other
-// INTENTIONAL BUG (1): Existing payload is not freed before overwrite -
-// leaking the old allocation (and its nested strings/data) every time.
-// INTENTIONAL BUG (2): UserInfo tags are shared (shallow copy) ->
-// double-free when both objects are destroyed.
-// Now consider: what happens if `this` is a CHAT_MESSAGE and `other` is a
-// USER_INFO? `user_info` is still null here...
+// Fix (CWE-415): the old code dereferenced `this`'s *existing* payload
+// pointer under `other`'s type (`*user_info = *other.user_info;`) and then
+// shallow-copied the tags pointer, so both objects' destructors would
+// delete[] the same array. We now free the old payload entirely and
+// allocate a fresh one, deep-copying tags element by element.
+// Fix (CWE-476): the old code copied `other.header` (changing `header.type`)
+// before touching payloads, then dereferenced `this`'s *old* pointer under
+// the *new* type - assigning a USER_INFO into a CHAT_MESSAGE-typed `this`
+// dereferenced a null `user_info`. We now free the old payload based on
+// its *original* type first, then allocate a fresh payload matching
+// `other`'s type - mirrors the copy constructor.
 Message &Message::operator=(const Message &other) {
   if (this != &other) {
-    // Bug: Not cleaning up existing resources before assignment?
-    header = other.header;
-
+    // Free whatever payload `this` currently owns, based on its current
+    // type - same cleanup logic as the destructor.
     switch (header.type) {
     case CHAT_MESSAGE:
-      *chat = *other.chat;
+      delete chat;
       break;
     case USER_INFO:
-      *user_info = *other.user_info;
-      user_info->tags = other.user_info->tags;
+      if (user_info) {
+        if (user_info->tags) {
+          delete[] user_info->tags;
+        }
+        delete user_info;
+      }
       break;
     case FILE_CHUNK:
-      *file_chunk = *other.file_chunk;
+      if (file_chunk) {
+        if (file_chunk->data) {
+          delete[] file_chunk->data;
+        }
+        delete file_chunk;
+      }
+      break;
+    }
+    chat = nullptr;
+    user_info = nullptr;
+    file_chunk = nullptr;
+
+    header = other.header;
+
+    // Allocate a fresh payload matching `other`'s type and deep-copy into
+    // it - mirrors Message::Message(const Message&).
+    switch (header.type) {
+    case CHAT_MESSAGE:
+      chat = new ChatMessage();
+      *chat = *other.chat;
+      chat->timestamp = other.chat->timestamp;
+      chat->priority = other.chat->priority;
+      break;
+    case USER_INFO:
+      user_info = new UserInfo();
+      user_info->username = other.user_info->username;
+      user_info->email = other.user_info->email;
+      user_info->user_id = other.user_info->user_id;
+      user_info->status = other.user_info->status;
+      user_info->tag_count = other.user_info->tag_count;
+
+      if (other.user_info->tags && other.user_info->tag_count > 0) {
+        user_info->tags = new ProtocolString[other.user_info->tag_count];
+        for (uint32_t i = 0; i < other.user_info->tag_count; i++) {
+          user_info->tags[i] = other.user_info->tags[i];
+        }
+      } else {
+        user_info->tags = nullptr;
+      }
+      break;
+    case FILE_CHUNK:
+      file_chunk = new FileChunk();
+      file_chunk->filename = other.file_chunk->filename;
+      file_chunk->chunk_id = other.file_chunk->chunk_id;
+      file_chunk->total_chunks = other.file_chunk->total_chunks;
+      file_chunk->chunk_size = other.file_chunk->chunk_size;
+
       if (other.file_chunk->data && other.file_chunk->chunk_size > 0) {
         file_chunk->data = new uint8_t[other.file_chunk->chunk_size];
         memcpy(file_chunk->data, other.file_chunk->data,
@@ -437,9 +496,10 @@ Message *Serializer::deserialize(const uint8_t *data, size_t length) {
         read_string(data + offset, length - offset, msg->file_chunk->filename);
 
     if (msg->file_chunk->chunk_size > 0) {
-      // Bug: chunk_size is trusted from the input without verifying that
-      // `offset + chunk_size <= length` - an oversized field reads past the
-      // buffer.
+      if (static_cast<uint64_t>(offset) + msg->file_chunk->chunk_size > length) {
+        delete msg;
+        return nullptr;
+      }
       msg->file_chunk->data = new uint8_t[msg->file_chunk->chunk_size];
       memcpy(msg->file_chunk->data, data + offset, msg->file_chunk->chunk_size);
     }
@@ -478,8 +538,17 @@ size_t Serializer::read_string(const uint8_t *buffer, size_t remaining,
     return 0; // Not enough data for length field
   }
 
-  memcpy(&str.length, buffer, sizeof(uint16_t));
+  uint16_t declared_length;
+  memcpy(&declared_length, buffer, sizeof(uint16_t));
 
+  if (static_cast<size_t>(declared_length) > remaining - sizeof(uint16_t)) {
+    // Declared length claims more bytes than are actually available.
+    str.length = 0;
+    str.data = nullptr;
+    return 0;
+  }
+
+  str.length = declared_length;
   if (str.length > 0) {
     str.data = new char[str.length];
     memcpy(str.data, buffer + sizeof(uint16_t), str.length);

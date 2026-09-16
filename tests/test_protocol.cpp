@@ -219,6 +219,94 @@ void test_deserialize_rejects_tag_count_overflow() {
   std::cout << "✓ Tag count overflow regression test passed" << std::endl;
 }
 
+void test_deserialize_rejects_oversized_string_length() {
+  std::cout << "Testing deserialize rejects oversized string length "
+               "(regression for CWE-125)..." << std::endl;
+
+  const uint8_t crashing_input[] = {
+      0xfe, 0xca, 0x01, 0x01, 0x10, 0x00, 0x00, 0x00,
+      0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 's', 'h', 'o', 'r', 't'};
+
+  Message *msg = Serializer::deserialize(crashing_input, sizeof(crashing_input));
+  if (msg) {
+    std::string u = msg->chat->username.to_string();
+    delete msg;
+  }
+
+  std::cout << "✓ Oversized string length regression test passed" << std::endl;
+}
+
+void test_deserialize_rejects_oversized_chunk_size() {
+  std::cout << "Testing deserialize rejects oversized FILE_CHUNK chunk_size "
+               "(regression for CWE-125)..." << std::endl;
+
+  const uint8_t crashing_input[] = {
+      0xfe, 0xca, 0x01, 0x03, 0x1d, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x60, 0xea, 0x05, 0x00,
+      'f', '.', 'b', 'i', 'n', 'o', 'n', 'l', 'y', 'f', 'e', 'w', 'b', 'y',
+      't', 'e', 's'};
+
+  Message *msg = Serializer::deserialize(crashing_input, sizeof(crashing_input));
+  assert(msg == nullptr); // chunk_size can't be backed by remaining data
+  delete msg;
+
+  std::cout << "✓ Oversized chunk_size regression test passed" << std::endl;
+}
+
+void test_assignment_no_leak() {
+  std::cout << "Testing UserInfo assignment operator (regression for CWE-401 leak)..." << std::endl;
+  Message target(USER_INFO);
+  target.user_info->username.set_data("initial");
+  for (int i = 0; i < 50; i++) {
+    Message source(USER_INFO);
+    source.user_info->username.set_data("iteration");
+    source.user_info->tag_count = 2;
+    source.user_info->tags = new ProtocolString[2];
+    source.user_info->tags[0].set_data("a");
+    source.user_info->tags[1].set_data("b");
+    target = source;
+  }
+  assert(target.user_info->username.to_string() == "iteration");
+  assert(target.user_info->tag_count == 2);
+  std::cout << "✓ Assignment leak regression test passed" << std::endl;
+}
+
+void test_assignment_no_double_free() {
+  std::cout << "Testing UserInfo assignment operator (regression for CWE-415 double-free)..." << std::endl;
+  Message source(USER_INFO);
+  source.user_info->tag_count = 2;
+  source.user_info->tags = new ProtocolString[2];
+  source.user_info->tags[0].set_data("tag1");
+  source.user_info->tags[1].set_data("tag2");
+  {
+    Message target(USER_INFO);
+    target = source;
+    assert(target.user_info->tags[0].to_string() == "tag1");
+    target.user_info->tags[0].set_data("changed");
+    assert(source.user_info->tags[0].to_string() == "tag1");
+  }
+  std::cout << "✓ Assignment double-free regression test passed" << std::endl;
+}
+
+void test_assignment_across_different_types() {
+  std::cout << "Testing assignment between different message types (regression for CWE-476)..." << std::endl;
+  Message chat_msg(CHAT_MESSAGE);
+  chat_msg.chat->username.set_data("alice");
+  Message user_msg(USER_INFO);
+  user_msg.user_info->username.set_data("bob");
+  user_msg.user_info->tag_count = 1;
+  user_msg.user_info->tags = new ProtocolString[1];
+  user_msg.user_info->tags[0].set_data("vip");
+  chat_msg = user_msg;
+  assert(chat_msg.header.type == USER_INFO);
+  assert(chat_msg.user_info != nullptr);
+  assert(chat_msg.chat == nullptr);
+  assert(chat_msg.user_info->username.to_string() == "bob");
+  assert(chat_msg.user_info->tags[0].to_string() == "vip");
+  std::cout << "✓ Cross-type assignment regression test passed" << std::endl;
+}
+
 int main() {
   std::cout << "Running protocol tests..." << std::endl;
 
@@ -231,6 +319,11 @@ int main() {
     test_user_with_tags_simple();
     test_user_info_copy_no_double_free();
     test_deserialize_rejects_tag_count_overflow();
+    test_deserialize_rejects_oversized_string_length();
+    test_deserialize_rejects_oversized_chunk_size();
+    test_assignment_no_leak();
+    test_assignment_no_double_free();
+    test_assignment_across_different_types();
 
     std::cout << "\n✓ All basic tests passed!" << std::endl;
     std::cout << "Note: These tests only cover happy path scenarios."
